@@ -504,3 +504,153 @@ export function getPrescriptionCount() {
 
 export const appointments = getAppointments();
 export const prescriptions = basePrescriptions.map((item) => ({ ...item }));
+
+// --- API Gateway Integration ---
+import { apiRequest } from "./api";
+
+export async function apiRegisterUser(name, email, password) {
+  // Generate a mock Okta UID for local session
+  const mockUid = "okta_pat_" + Math.random().toString(36).substr(2, 9);
+  
+  // Save temporary session so apiRequest gets headers
+  const session = { userId: mockUid, email: email.toLowerCase(), role: "PATIENT" };
+  window.localStorage.setItem(CURRENT_USER_KEY, JSON.stringify({ profile: { name, email, phone: "" }, ...session }));
+
+  // Call Gateway User Registration
+  await apiRequest("/api/v1/auth/register", "POST", { userType: "PATIENT" }, "PATIENT");
+
+  // Save Patient Profile
+  const profile = await apiRequest("/api/v1/patients/profile", "POST", {
+    name,
+    phone: "",
+    dob: null,
+    bloodGroup: "O+"
+  }, "PATIENT");
+
+  // Save final session
+  window.localStorage.setItem(CURRENT_USER_KEY, JSON.stringify({ profile, ...session }));
+  return { success: true };
+}
+
+export async function apiLoginUser(email, password) {
+  // Simulating lookup by pulling registered user or assigning mock details
+  const mockUid = "okta_pat_123";
+  const session = { userId: mockUid, email: email.toLowerCase(), role: "PATIENT" };
+  window.localStorage.setItem(CURRENT_USER_KEY, JSON.stringify({ profile: { name: "John Doe", email }, ...session }));
+
+  try {
+    // Attempt to pull user profile from backend
+    const profile = await apiRequest("/api/v1/patients/profile", "GET", null, "PATIENT");
+    window.localStorage.setItem(CURRENT_USER_KEY, JSON.stringify({ profile, ...session }));
+    return { success: true };
+  } catch (e) {
+    // If not found, default to registering or onboarding
+    return { success: false, message: "User profile not found. Please register first." };
+  }
+}
+
+export async function apiGetProfile() {
+  return await apiRequest("/api/v1/patients/profile", "GET", null, "PATIENT");
+}
+
+export async function apiSaveProfile(profileData) {
+  const profile = await apiRequest("/api/v1/patients/profile", "POST", {
+    name: profileData.name,
+    phone: profileData.phone,
+    dob: profileData.dob,
+    bloodGroup: profileData.bloodGroup
+  }, "PATIENT");
+
+  const current = JSON.parse(window.localStorage.getItem(CURRENT_USER_KEY) || "{}");
+  current.profile = profile;
+  window.localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(current));
+  return profile;
+}
+
+export async function apiGetDoctors(specialty) {
+  const path = specialty && specialty !== "All"
+    ? `/api/v1/patients/doctors?specialty=${specialty}`
+    : "/api/v1/patients/doctors";
+  return await apiRequest(path, "GET", null, "PATIENT");
+}
+
+export async function apiGetDoctorSlots(doctorId) {
+  // Pull slots from doctor-slot-service via Gateway
+  return await apiRequest(`/api/v1/patients/doctors/${doctorId}/slots`, "GET", null, "PATIENT");
+}
+
+export async function apiBookAppointment(slotId, reason) {
+  const mockTxId = "tx_web_" + Math.random().toString(36).substr(2, 9);
+  return await apiRequest("/api/v1/patients/appointments", "POST", {
+    slotId,
+    reason,
+    paymentTransactionId: mockTxId
+  }, "PATIENT");
+}
+
+export async function apiGetAppointments() {
+  return await apiRequest("/api/v1/patients/appointments", "GET", null, "PATIENT");
+}
+
+export async function apiCancelAppointment(appointmentId) {
+  return await apiRequest(`/api/v1/patients/appointments/${appointmentId}/cancel`, "POST", null, "PATIENT");
+}
+
+export async function apiGetReminders() {
+  try {
+    const appts = await apiGetAppointments();
+    const docs = await apiGetDoctors();
+    
+    const upcoming = appts.filter(a => a.status === "BOOKED" || a.status === "upcoming");
+    
+    const notifications = upcoming.map((appt) => {
+      const dbDoc = docs.find(d => d.id.toString() === appt.doctorId.toString());
+      const docName = dbDoc ? dbDoc.name : "Consultation Specialist";
+      const dateStr = appt.appointmentDatetime.split("T")[0];
+      const timePart = appt.appointmentDatetime.split("T")[1];
+      
+      const formatTimeStr = (timeStr) => {
+        try {
+          const [hoursStr, minutesStr] = timeStr.split(":");
+          let hours = parseInt(hoursStr, 10);
+          const ampm = hours >= 12 ? "PM" : "AM";
+          hours = hours % 12;
+          hours = hours ? hours : 12;
+          return `${hours}:${minutesStr} ${ampm}`;
+        } catch (e) {
+          return timeStr;
+        }
+      };
+      
+      return {
+        id: `appt_rem_${appt.id}`,
+        type: "appointment",
+        title: `Appointment with ${docName}`,
+        time: `${dateStr} at ${formatTimeStr(timePart)}`,
+        refId: appt.id,
+        dismissed: false
+      };
+    });
+    
+    notifications.push({
+      id: "med_rem_1",
+      type: "medication",
+      title: "Take Cetirizine (10 mg)",
+      time: "Daily at 8:00 AM",
+      dismissed: false
+    });
+    
+    const dismissedIds = JSON.parse(window.localStorage.getItem("dismissed_reminders") || "[]");
+    return notifications.filter(n => !dismissedIds.includes(n.id));
+  } catch (err) {
+    console.error("Failed to load live reminders, fallback to static", err);
+    return [];
+  }
+}
+
+export function apiDismissReminder(id) {
+  const dismissedIds = JSON.parse(window.localStorage.getItem("dismissed_reminders") || "[]");
+  dismissedIds.push(id);
+  window.localStorage.setItem("dismissed_reminders", JSON.stringify(dismissedIds));
+}
+

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Award, Calendar, MapPin, Star, Stethoscope, Video, CreditCard } from "lucide-react";
 import { format } from "date-fns";
-import { addAppointment, findDoctor, patient } from "@/lib/mockData";
+import { addAppointment, findDoctor, patient, apiGetDoctorSlots, apiBookAppointment, apiGetDoctors } from "@/lib/mockData";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -47,10 +47,12 @@ function ModeButton({ active, onClick, icon, label, fee }) {
 export default function DoctorDetails() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
-  const doctor = findDoctor(id);
+  const [doctor, setDoctor] = useState(null);
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const [selectedTime, setSelectedTime] = useState(null);
-  const [selectedMode, setSelectedMode] = useState(doctor.modes[0]);
+  const [selectedSlotId, setSelectedSlotId] = useState(null);
+  const [selectedMode, setSelectedMode] = useState("in-person");
+  const [slotsList, setSlotsList] = useState([]);
 
   // Payment simulated modal states
   const [showPayment, setShowPayment] = useState(false);
@@ -61,10 +63,54 @@ export default function DoctorDetails() {
   const [cardCvv, setCardCvv] = useState("");
 
   useEffect(() => {
+    // Fetch doctor info from backend approved directory list
+    apiGetDoctors().then((data) => {
+      const dbDoc = data.find(d => d.id.toString() === id);
+      if (dbDoc) {
+        const docObj = {
+          id: dbDoc.id.toString(),
+          name: dbDoc.name,
+          specialty: dbDoc.specialty,
+          experience: dbDoc.experienceYears,
+          rating: 4.8,
+          reviews: 120,
+          clinic: dbDoc.university || "PalsCare Clinic",
+          modes: ["in-person", "telemedicine"],
+          feeUsd: 80,
+          about: dbDoc.bio || "Primary care physician.",
+          photo: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?q=80&w=256&h=256&fit=crop"
+        };
+        setDoctor(docObj);
+        setSelectedMode(docObj.modes[0]);
+      } else {
+        const fallback = findDoctor(id);
+        setDoctor(fallback);
+        setSelectedMode(fallback.modes[0]);
+      }
+    }).catch(err => {
+      console.error("Failed to load doctor from database, falling back to mock", err);
+      const fallback = findDoctor(id);
+      setDoctor(fallback);
+      setSelectedMode(fallback.modes[0]);
+    });
+  }, [id]);
+
+  useEffect(() => {
+    if (!doctor) return;
     setSelectedDayIndex(0);
     setSelectedTime(null);
-    setSelectedMode(doctor.modes[0]);
-  }, [doctor.id]);
+    setSelectedSlotId(null);
+  }, [doctor?.id]);
+
+  useEffect(() => {
+    if (!doctor) return;
+    apiGetDoctorSlots(doctor.id).then((data) => {
+      setSlotsList(data);
+    }).catch(err => {
+      console.error("Failed to load doctor slots from backend", err);
+      setSlotsList([]);
+    });
+  }, [doctor?.id]);
 
   const days = useMemo(() => {
     return Array.from({ length: 7 }, (_, index) => {
@@ -95,28 +141,47 @@ export default function DoctorDetails() {
 
     setIsPaying(true);
 
-    setTimeout(() => {
-      const chosenDate = days[selectedDayIndex];
-      const dateValue = formatSlotDate(chosenDate);
-
-      addAppointment({
-        doctorId: doctor.id,
-        date: dateValue,
-        time: selectedTime,
-        mode: selectedMode,
-        reason: "Doctor visit",
+    apiBookAppointment(selectedSlotId, "Doctor visit")
+      .then(() => {
+        setIsPaying(false);
+        setShowPayment(false);
+        toast.success("Appointment booked & paid!", {
+          description: `${doctor.name} • ${format(days[selectedDayIndex], "EEE, MMM d")} at ${selectedTime}`,
+        });
+        navigate("/appointments");
+      })
+      .catch((err) => {
+        setIsPaying(false);
+        toast.error("Booking failed: Slot might have been booked in the meantime.");
+        console.error(err);
       });
-
-      setIsPaying(false);
-      setShowPayment(false);
-
-      toast.success("Appointment booked & paid!", {
-        description: `${doctor.name} • ${format(chosenDate, "EEE, MMM d")} at ${selectedTime}`,
-      });
-
-      navigate("/appointments");
-    }, 1800);
   };
+
+  const availableDaySlots = useMemo(() => {
+    const selectedDayName = format(days[selectedDayIndex], "EEEE");
+    return slotsList.filter(slot => slot.slotDay.toLowerCase() === selectedDayName.toLowerCase() && !slot.isBooked);
+  }, [slotsList, selectedDayIndex, days]);
+
+  const formatTimeStr = (timeStr) => {
+    try {
+      const [hoursStr, minutesStr] = timeStr.split(":");
+      let hours = parseInt(hoursStr, 10);
+      const ampm = hours >= 12 ? "PM" : "AM";
+      hours = hours % 12;
+      hours = hours ? hours : 12;
+      return `${hours}:${minutesStr} ${ampm}`;
+    } catch (e) {
+      return timeStr;
+    }
+  };
+
+  if (!doctor) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+      </div>
+    );
+  }
 
   const currentFee = selectedMode === "telemedicine" && doctor.modes.includes("telemedicine") ? doctor.feeUsd - 10 : doctor.feeUsd;
 
@@ -208,19 +273,28 @@ export default function DoctorDetails() {
       <section className="px-5 py-2">
         <h2 className="font-display text-lg font-semibold">Select time</h2>
         <div className="mt-3 grid grid-cols-2 gap-2">
-          {timeSlots.map((time) => (
-            <button
-              key={time}
-              type="button"
-              onClick={() => setSelectedTime(time)}
-              className={cn(
-                "rounded-2xl border px-3 py-3 text-sm font-medium transition",
-                selectedTime === time ? "border-primary bg-primary-soft text-primary shadow-soft" : "border-border bg-card hover:border-primary/40",
-              )}
-            >
-              {time}
-            </button>
-          ))}
+          {availableDaySlots.map((slot) => {
+            const timeFormatted = formatTimeStr(slot.startTime);
+            return (
+              <button
+                key={slot.id}
+                type="button"
+                onClick={() => {
+                  setSelectedTime(timeFormatted);
+                  setSelectedSlotId(slot.id);
+                }}
+                className={cn(
+                  "rounded-2xl border px-3 py-3 text-sm font-medium transition",
+                  selectedSlotId === slot.id ? "border-primary bg-primary-soft text-primary shadow-soft" : "border-border bg-card hover:border-primary/40",
+                )}
+              >
+                {timeFormatted} ({slot.slotMode})
+              </button>
+            );
+          })}
+          {availableDaySlots.length === 0 && (
+            <p className="col-span-2 text-center text-sm text-muted-foreground py-4">No available slots for this day.</p>
+          )}
         </div>
       </section>
 

@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { AlertTriangle, Cake, ChevronRight, Droplet, Bell, Lock, Mail, Phone, ShieldCheck, Edit3, X, Save, LogOut } from "lucide-react";
-import { patient, updatePatientProfile, logoutUser } from "@/lib/mockData";
+import { patient as importedPatient, updatePatientProfile, logoutUser, apiGetProfile, apiSaveProfile } from "@/lib/mockData";
 import { toast } from "sonner";
 
 function Row({ icon, label, value }) {
@@ -27,6 +27,18 @@ function SettingRow({ icon, label }) {
 }
 
 export default function Profile() {
+  const [profileData, setProfileData] = useState(() => importedPatient);
+  const patient = profileData; // shadows imported patient proxy
+
+  useEffect(() => {
+    apiGetProfile().then((data) => {
+      const updated = updatePatientProfile(data);
+      if (updated) {
+        setProfileData({ ...updated });
+      }
+    }).catch(err => console.error("Failed to load patient from server", err));
+  }, []);
+
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
@@ -75,23 +87,16 @@ export default function Profile() {
       return;
     }
 
-    const updated = updatePatientProfile({
-      name,
-      phone,
-      email,
-      dob,
-      bloodGroup,
-      allergies,
-      emergencyContact: { name: emergencyName, relation: emergencyRelation, phone: emergencyPhone },
-      insurance: { provider: insuranceProvider, plan: insurancePlan, memberId: insuranceId }
-    });
-
-    if (updated) {
-      toast.success("Profile updated successfully!");
-      setIsEditing(false);
-    } else {
-      toast.error("Failed to update profile.");
-    }
+    apiSaveProfile({ name, phone, dob, bloodGroup })
+      .then((updated) => {
+        setProfileData({ ...updated });
+        toast.success("Profile updated successfully!");
+        setIsEditing(false);
+      })
+      .catch((err) => {
+        console.error(err);
+        toast.error("Failed to update profile.");
+      });
   };
 
   const handleAddAllergy = (e) => {

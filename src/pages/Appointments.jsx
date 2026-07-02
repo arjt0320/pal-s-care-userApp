@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Calendar, MoreHorizontal, Stethoscope, Video, AlertTriangle } from "lucide-react";
 import { format } from "date-fns";
-import { findDoctor, getAppointments, updateAppointmentStatus } from "@/lib/mockData";
+import { findDoctor, getAppointments, updateAppointmentStatus, apiGetAppointments, apiCancelAppointment, apiGetDoctors } from "@/lib/mockData";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -39,17 +39,19 @@ function getHoursToAppointment(appointmentDateStr, appointmentTimeStr) {
 }
 
 function AppointmentCard({ appointment, onCancelClick, onReschedule }) {
-  const doctor = findDoctor(appointment.doctorId);
+  const doctorName = appointment.doctorName;
+  const doctorSpecialty = appointment.doctorSpecialty;
+  const doctorPhoto = appointment.doctorPhoto;
 
   return (
     <article className="rounded-3xl bg-card p-4 shadow-soft">
       <div className="flex items-start gap-3">
-        <img src={doctor.photo} alt={doctor.name} className="h-14 w-14 rounded-2xl object-cover ring-2 ring-primary-soft" />
+        <img src={doctorPhoto} alt={doctorName} className="h-14 w-14 rounded-2xl object-cover ring-2 ring-primary-soft" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
-              <h3 className="truncate font-display text-base font-semibold">{doctor.name}</h3>
-              <p className="text-xs text-muted-foreground">{doctor.specialty}</p>
+              <h3 className="truncate font-display text-base font-semibold">{doctorName}</h3>
+              <p className="text-xs text-muted-foreground">{doctorSpecialty}</p>
             </div>
             <button type="button" className="grid h-8 w-8 place-items-center rounded-full hover:bg-secondary">
               <MoreHorizontal className="h-4 w-4" />
@@ -108,7 +110,7 @@ function AppointmentCard({ appointment, onCancelClick, onReschedule }) {
 }
 
 export default function Appointments() {
-  const [appointments, setAppointmentsState] = useState(() => getAppointments());
+  const [appointments, setAppointmentsState] = useState([]);
   const [tab, setTab] = useState("upcoming");
 
   // Cancellation modal states
@@ -116,6 +118,53 @@ export default function Appointments() {
   const [showBlockedModal, setShowBlockedModal] = useState(false);
   const [activeAppointment, setActiveAppointment] = useState(null);
   const [isCancelling, setIsCancelling] = useState(false);
+
+  useEffect(() => {
+    // Load database doctors list first
+    apiGetDoctors()
+      .then((docs) => {
+        loadAppointments(docs);
+      })
+      .catch((err) => {
+        console.error("Failed to load doctor list, falling back", err);
+        loadAppointments([]);
+      });
+  }, []);
+
+  const loadAppointments = (docs = []) => {
+    apiGetAppointments().then((data) => {
+      const mapped = data.map(appt => {
+        const dbDoc = docs.find(d => d.id.toString() === appt.doctorId.toString());
+        return {
+          id: appt.id,
+          doctorId: appt.doctorId.toString(),
+          doctorName: dbDoc ? dbDoc.name : "Dr. Consultation Specialist",
+          doctorSpecialty: dbDoc ? dbDoc.specialty : "General Practitioner",
+          doctorPhoto: dbDoc && dbDoc.photo ? dbDoc.photo : "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?q=80&w=256&h=256&fit=crop",
+          date: appt.appointmentDatetime.split("T")[0],
+          time: formatTime(appt.appointmentDatetime),
+          mode: appt.consultationMode === "VIDEO" ? "telemedicine" : "in-person",
+          status: appt.status === "BOOKED" ? "upcoming" : appt.status.toLowerCase(),
+          reason: appt.reason
+        };
+      });
+      setAppointmentsState(mapped);
+    }).catch(err => console.error("Failed to load appointments", err));
+  };
+
+  const formatTime = (datetimeStr) => {
+    try {
+      const timeStr = datetimeStr.split("T")[1];
+      const [hoursStr, minutesStr] = timeStr.split(":");
+      let hours = parseInt(hoursStr, 10);
+      const ampm = hours >= 12 ? "PM" : "AM";
+      hours = hours % 12;
+      hours = hours ? hours : 12;
+      return `${hours}:${minutesStr} ${ampm}`;
+    } catch (e) {
+      return "12:00 PM";
+    }
+  };
 
   const filtered = useMemo(() => {
     if (tab === "all") return appointments;
@@ -137,20 +186,19 @@ export default function Appointments() {
     if (!activeAppointment) return;
 
     setIsCancelling(true);
-    setTimeout(() => {
-      const next = updateAppointmentStatus(activeAppointment.id, "cancelled");
-      setAppointmentsState(next);
-      setIsCancelling(false);
-      setShowCancelModal(false);
-      
-      const doctor = findDoctor(activeAppointment.doctorId);
-      const refundAmount = activeAppointment.mode === "telemedicine" && doctor.modes.includes("telemedicine") ? doctor.feeUsd - 10 : doctor.feeUsd;
-
-      toast.success("Appointment cancelled & refunded", {
-        description: `Successfully refunded $${refundAmount}.00 to your payment card.`,
+    apiCancelAppointment(activeAppointment.id)
+      .then(() => {
+        setIsCancelling(false);
+        setShowCancelModal(false);
+        toast.success("Appointment cancelled & refunded");
+        loadAppointments();
+        setActiveAppointment(null);
+      })
+      .catch((err) => {
+        setIsCancelling(false);
+        toast.error("Failed to cancel appointment");
+        console.error(err);
       });
-      setActiveAppointment(null);
-    }, 1200);
   };
 
   const handleReschedule = (appointment) => {

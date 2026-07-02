@@ -3,30 +3,115 @@ import { Bell, CalendarDays, ChevronRight, FileHeart, Pill, Plus, CheckCircle, C
 import { Link } from "react-router-dom";
 import { DoctorCard } from "@/components/DoctorCard";
 import { format } from "date-fns";
-import { doctors, findDoctor, getAppointments, patient, specialties, getReminders, dismissReminder } from "@/lib/mockData";
+import { findDoctor, apiGetProfile, apiGetAppointments, apiGetDoctors, specialties, apiGetReminders, apiDismissReminder } from "@/lib/mockData";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "sonner";
 
 export default function Index() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [reminders, setReminders] = useState([]);
+  const [profileName, setProfileName] = useState("Patient");
+  const [nextAppointment, setNextAppointment] = useState(null);
+  const [nextDoctor, setNextDoctor] = useState(null);
+  const [dbDoctors, setDbDoctors] = useState([]);
+  const [recentVisit, setRecentVisit] = useState(null);
+  const [stats, setStats] = useState({ doctorCount: 4, upcomingCount: 0 });
 
   useEffect(() => {
-    setReminders(getReminders());
+    apiGetReminders().then(setReminders);
+    
+    // Load patient name from database
+    apiGetProfile().then((p) => {
+      if (p && p.name) setProfileName(p.name);
+    }).catch(err => console.error("Failed to load profile for dashboard", err));
+
+    // Load active appointments and doctors list from database
+    Promise.all([apiGetAppointments(), apiGetDoctors()])
+      .then(([appts, docs]) => {
+        const mappedDocs = docs.map(doc => ({
+          id: doc.id.toString(),
+          name: doc.name,
+          specialty: doc.specialty,
+          experience: doc.experienceYears,
+          rating: 4.8,
+          reviews: 120,
+          clinic: doc.university || "PalsCare Clinic",
+          modes: ["in-person", "telemedicine"],
+          feeUsd: 80,
+          about: doc.bio || "Primary care physician.",
+          photo: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?q=80&w=256&h=256&fit=crop"
+        }));
+        setDbDoctors(mappedDocs);
+
+        const upcoming = appts.filter(a => a.status === "BOOKED" || a.status === "upcoming");
+        const completed = appts.filter(a => a.status === "COMPLETED" || a.status === "completed");
+        
+        const nextAppt = upcoming[0];
+        if (nextAppt) {
+          const dbDoc = mappedDocs.find(d => d.id.toString() === nextAppt.doctorId.toString());
+          setNextAppointment({
+            id: nextAppt.id,
+            date: nextAppt.appointmentDatetime.split("T")[0],
+            time: formatTimeStr(nextAppt.appointmentDatetime.split("T")[1]),
+            mode: nextAppt.consultationMode === "VIDEO" ? "telemedicine" : "in-person",
+            reason: nextAppt.reason || "Doctor Visit"
+          });
+          if (dbDoc) {
+            setNextDoctor({
+              name: dbDoc.name,
+              specialty: dbDoc.specialty,
+              photo: dbDoc.photo
+            });
+          } else {
+            setNextDoctor({
+              name: "Dr. Consultation Specialist",
+              specialty: "General Medicine",
+              photo: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?q=80&w=256&h=256&fit=crop"
+            });
+          }
+        } else {
+          setNextAppointment(null);
+          setNextDoctor(null);
+        }
+
+        if (completed.length > 0) {
+          const lastCompleted = completed[completed.length - 1];
+          const dbDoc = mappedDocs.find(d => d.id.toString() === lastCompleted.doctorId.toString());
+          setRecentVisit({
+            doctorName: dbDoc ? dbDoc.name : "Dr. Consultation Specialist",
+            reason: lastCompleted.reason || "Follow-up care",
+            date: lastCompleted.appointmentDatetime.split("T")[0]
+          });
+        } else {
+          setRecentVisit(null);
+        }
+
+        setStats({
+          doctorCount: docs.length > 0 ? docs.length : 4,
+          upcomingCount: upcoming.length
+        });
+      })
+      .catch(err => console.error("Failed to load dashboard data", err));
   }, []);
 
-  const handleDismiss = (id) => {
-    const next = dismissReminder(id);
-    setReminders(next);
-    toast.success("Notification dismissed");
+  const formatTimeStr = (timeStr) => {
+    try {
+      const [hoursStr, minutesStr] = timeStr.split(":");
+      let hours = parseInt(hoursStr, 10);
+      const ampm = hours >= 12 ? "PM" : "AM";
+      hours = hours % 12;
+      hours = hours ? hours : 12;
+      return `${hours}:${minutesStr} ${ampm}`;
+    } catch (e) {
+      return timeStr;
+    }
   };
 
-  const upcomingAppointments = getAppointments().filter((appointment) => appointment.status === "upcoming");
-  const nextAppointment = upcomingAppointments[0];
-  const nextDoctor = nextAppointment ? findDoctor(nextAppointment.doctorId) : null;
-  const doctorCount = doctors.length;
-  const upcomingCount = upcomingAppointments.length;
-  const recentVisit = [...getAppointments()].reverse().find((appointment) => appointment.status === "completed");
+  const handleDismiss = (id) => {
+    apiDismissReminder(id);
+    apiGetReminders().then(setReminders);
+    toast.success("Notification dismissed");
+  };
 
   const unreadCount = reminders.length;
 
@@ -36,11 +121,11 @@ export default function Index() {
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm text-muted-foreground">Good afternoon,</p>
-            <h1 className="font-display text-2xl font-semibold">{patient.name ? patient.name.split(" ")[0] : "Guest"}</h1>
+            <h1 className="font-display text-2xl font-semibold">{profileName ? profileName.split(" ")[0] : "Guest"}</h1>
           </div>
           <button
             onClick={() => {
-              setReminders(getReminders());
+              apiGetReminders().then(setReminders);
               setShowNotifications(true);
             }}
             className="relative grid h-11 w-11 place-items-center rounded-full bg-card shadow-soft hover:bg-secondary transition"
@@ -137,10 +222,10 @@ export default function Index() {
       <section className="px-5 py-5">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="font-display text-xl font-semibold">Featured doctors</h2>
-          <span className="text-xs text-muted-foreground">{doctorCount} professionals</span>
+          <span className="text-xs text-muted-foreground">{stats.doctorCount} professionals</span>
         </div>
         <div className="space-y-3">
-          {doctors.slice(0, 4).map((doctor) => (
+          {dbDoctors.slice(0, 4).map((doctor) => (
             <DoctorCard key={doctor.id} doctor={doctor} />
           ))}
         </div>
@@ -150,12 +235,12 @@ export default function Index() {
         <div className="grid grid-cols-2 gap-3">
           <div className="rounded-3xl bg-card p-4 shadow-soft">
             <p className="text-xs uppercase tracking-wider text-muted-foreground">Upcoming visits</p>
-            <p className="mt-2 font-display text-3xl font-semibold">{upcomingCount}</p>
+            <p className="mt-2 font-display text-3xl font-semibold">{stats.upcomingCount}</p>
             <p className="mt-1 text-xs text-muted-foreground">Appointments scheduled</p>
           </div>
           <div className="rounded-3xl bg-card p-4 shadow-soft">
             <p className="text-xs uppercase tracking-wider text-muted-foreground">Doctors available</p>
-            <p className="mt-2 font-display text-3xl font-semibold">{doctorCount}</p>
+            <p className="mt-2 font-display text-3xl font-semibold">{stats.doctorCount}</p>
             <p className="mt-1 text-xs text-muted-foreground">Across popular specialties</p>
           </div>
         </div>

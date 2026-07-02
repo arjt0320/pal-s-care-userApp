@@ -1,27 +1,70 @@
 import { Search, SlidersHorizontal } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { DoctorCard } from "@/components/DoctorCard";
 import { cn } from "@/lib/utils";
-import { doctors, specialties } from "@/lib/mockData";
+import { doctors, specialties, apiGetDoctors } from "@/lib/mockData";
 
 export default function FindDoctor() {
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState("");
   const active = params.get("specialty") || "All";
+  const [doctorsList, setDoctorsList] = useState([]);
+  const [visibleCount, setVisibleCount] = useState(5);
+
+  useEffect(() => {
+    apiGetDoctors(active).then((data) => {
+      const mapped = data.map((doc) => ({
+        id: doc.id.toString(),
+        name: doc.name,
+        specialty: doc.specialty,
+        experience: doc.experienceYears,
+        rating: 4.8,
+        reviews: 120,
+        clinic: doc.university || "PalsCare Clinic",
+        modes: ["in-person", "telemedicine"],
+        feeUsd: 80,
+        about: doc.bio || "Primary care physician."
+      }));
+      setDoctorsList(mapped);
+    }).catch(err => {
+      console.error("Failed to load doctors", err);
+      // fallback to mock doctors if backend is offline or empty during UI dev
+      setDoctorsList(doctors);
+    });
+  }, [active]);
 
   const filteredDoctors = useMemo(() => {
-    return doctors.filter((doctor) => {
+    return doctorsList.filter((doctor) => {
       const matchSpecialty = active === "All" || doctor.specialty === active;
       const matchQuery =
         !query ||
         doctor.name.toLowerCase().includes(query.toLowerCase()) ||
         doctor.specialty.toLowerCase().includes(query.toLowerCase()) ||
-        doctor.clinic.toLowerCase().includes(query.toLowerCase());
+        (doctor.clinic && doctor.clinic.toLowerCase().includes(query.toLowerCase()));
 
       return matchSpecialty && matchQuery;
     });
+  }, [doctorsList, active, query]);
+
+  // Reset visible items when query or active specialty changes
+  useEffect(() => {
+    setVisibleCount(5);
   }, [active, query]);
+
+  // Infinite Scroll Listener
+  useEffect(() => {
+    const handleScroll = () => {
+      if (
+        window.innerHeight + document.documentElement.scrollTop >=
+        document.documentElement.offsetHeight - 120
+      ) {
+        setVisibleCount((prev) => Math.min(prev + 5, filteredDoctors.length));
+      }
+    };
+    window.addEventListener("scroll", handleScroll);
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, [filteredDoctors.length]);
 
   const setSpecialty = (specialty) => {
     if (specialty === "All") {
@@ -73,9 +116,17 @@ export default function FindDoctor() {
 
       <section className="space-y-3 px-5 pb-6">
         <p className="text-xs text-muted-foreground">{filteredDoctors.length} doctors found</p>
-        {filteredDoctors.map((doctor) => (
+        {filteredDoctors.slice(0, visibleCount).map((doctor) => (
           <DoctorCard key={doctor.id} doctor={doctor} />
         ))}
+        
+        {visibleCount < filteredDoctors.length && (
+          <div className="flex justify-center items-center py-6 gap-2">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            <span className="text-xs text-muted-foreground font-semibold">Loading more doctors...</span>
+          </div>
+        )}
+
         {filteredDoctors.length === 0 && (
           <div className="rounded-2xl bg-card p-8 text-center text-sm text-muted-foreground shadow-soft">
             No doctors match your search.
